@@ -1,0 +1,226 @@
+### This is the Python code for calculating Brain-aging using FA measures. 
+
+import os
+import pandas as pd
+import numpy as np
+from plotnine import *
+import sklearn
+import math
+from pprint import pprint
+import random
+
+os.chdir(r'YOUR DIRECTORY')
+
+### Import files:
+smk=pd.read_csv(r'YOUR HEALTHY/CONTROL (smoking status) DATA.txt', sep=" ")
+pd.crosstab(index=smk['SMK'], columns='count')
+smk_h=smk.loc[smk['SMK']==1] ## Healthy group: HC
+smk_d=smk.loc[smk['SMK']==2] ## Diseased group: D
+
+## Split HC to training and testing with 1:1 ratio:
+smk_h_Train=smk_h.sample(frac = 0.5) 
+smk_h_Test=smk_h.drop(smk_h_Train.index)
+
+### Get FA to calculate brain-age:
+fa=pd.read_csv(r'YOUR NEUROIMAGING (FA measures) DATA.txt', sep=" ")
+fa1=fa[fa.columns.drop(list(fa.filter(regex='average')))]
+len(fa1.index) #n=37441
+covariates=pd.read_csv(r'covariates_BMI_Age_Sex.csv')
+len(covariates.index) #n=502506
+df=covariates.merge(fa1,left_on=['FID', 'IID'], right_on=['FID', 'IID'])
+
+# This is the training set for fixing model:
+train=smk_h_Train.merge(df,left_on=['FID', 'IID'], right_on=['FID', 'IID'])
+# These are the testing sets for testing the prediction:
+test_h=smk_h_Test.merge(df,left_on=['FID', 'IID'], right_on=['FID', 'IID'])
+test_d=smk_d.merge(df,left_on=['FID', 'IID'], right_on=['FID', 'IID'])
+
+train.to_excel(r"train.xlsx")
+test_h.to_excel(r"test_h.xlsx")
+test_d.to_excel(r"test_d.xlsx")
+
+train[['age','bmi','sex']].describe()
+test_h[['age','bmi','sex']].describe()
+test_d[['age','bmi','sex']].describe()   
+    
+    
+## Prepare data:
+# Training set:
+x_train=train[train.columns.drop(list(['FID', 'IID','age','bmi','sex','SMK']))]
+y_train=train[['age']]
+# Testing sets:
+x_test_h=test_h[test_h.columns.drop(list(['FID', 'IID','age','bmi','sex','SMK']))]
+y_test_h=test_h[['age']]
+x_test_d=test_d[test_d.columns.drop(list(['FID', 'IID','age','bmi','sex','SMK']))]
+y_test_d=test_d[['age']]
+
+
+####### all 40 regions (left and right) random forest RFE selection
+
+## Covert to array for analysis:
+y_train_array = y_train.values
+y_train_array = y_train_array.astype(np.float64)
+
+##### split data into 5 folds
+from sklearn.model_selection import cross_val_score, KFold
+
+kf = KFold(n_splits=5, random_state=20210823, shuffle=True)
+#kf = KFold(n_splits=5, random_state=20190602, shuffle=True)
+kf.get_n_splits(x_train)
+
+print(kf)  
+
+
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.feature_selection import RFECV
+from pprint import pprint
+
+Model_RF = RandomForestRegressor(n_estimators=200, max_features='sqrt', max_depth=10, 
+                                 min_samples_split=5, min_samples_leaf=2, bootstrap=True, random_state=202002)
+rfecv = RFECV(estimator=Model_RF, step=1, cv=kf, scoring='neg_mean_absolute_error')
+rfecv.fit(x_train, y_train_array.ravel())
+
+selectedFA=list(np.array(x_train.columns.values)[np.array(rfecv.support_)])
+selectedFA
+
+x_train_selectedFA=x_train[selectedFA]
+x_train_selectedFA_array=x_train_selectedFA.values
+
+x_test_h_selectedFA=x_test_h[selectedFA]
+x_test_d_selectedFA=x_test_d[selectedFA]
+
+
+####################  model1: random forest  ####################
+
+###############  model fitting of random forest
+### tune hyperparameter of RF using RandomizedSearchCV
+Model_RF.fit(x_train_selectedFA, y_train_array.ravel())
+
+
+##########  prediction performance of random forest
+from sklearn.metrics import mean_absolute_error
+
+### Fit in training sets:
+y_pred_train = Model_RF.predict(x_train_selectedFA)
+y_pred_train = pd.DataFrame({'y_pred_train':y_pred_train})
+
+real_pred_train = pd.concat([y_train, y_pred_train], axis=1)
+
+real_pred_train_arrary = real_pred_train.values.transpose()
+np.corrcoef(real_pred_train_arrary)  
+mean_absolute_error(y_train, y_pred_train)  
+
+
+### Fit in testing sets:
+# HC:
+y_pred_test_h = Model_RF.predict(x_test_h_selectedFA)
+y_pred_test_h = pd.DataFrame({'y_pred_test_h':y_pred_test_h})
+
+real_pred_test_h = pd.concat([y_test_h, y_pred_test_h], axis=1)
+
+real_pred_test_h_arrary = real_pred_test_h.values.transpose()
+np.corrcoef(real_pred_test_h_arrary)  
+mean_absolute_error(y_test_h, y_pred_test_h)  
+
+# D:
+y_pred_test_d = Model_RF.predict(x_test_d_selectedFA)
+y_pred_test_d = pd.DataFrame({'y_pred_test_d':y_pred_test_d})
+
+real_pred_test_d = pd.concat([y_test_d, y_pred_test_d], axis=1)
+
+real_pred_test_d_arrary = real_pred_test_d.values.transpose()
+np.corrcoef(real_pred_test_d_arrary)  # 0.59812551
+mean_absolute_error(y_test_d, y_pred_test_d)  # years 4.964793845271262
+
+## Merge predicted values and real values in testing sets:
+real_pred_test_h = pd.concat([y_pred_test_h, test_h], axis=1)
+real_pred_test_d = pd.concat([y_pred_test_d, test_d], axis=1)
+
+real_pred_test_h['group'] = 'HC'
+real_pred_test_h = real_pred_test_h.rename(columns= {"y_pred_test_h": "y_pred"})
+real_pred_test_d['group'] = "SMK"
+real_pred_test_d = real_pred_test_d.rename(columns= {"y_pred_test_d": "y_pred"})
+real_pred_all = pd.concat([real_pred_test_d, real_pred_test_h], axis=0)
+
+real_pred_all['difference_pred_real'] = real_pred_all['y_pred'] - real_pred_all['age']
+
+real_pred_test_h['difference_pred_real'] = real_pred_test_h['y_pred'] - real_pred_test_h['age']
+real_pred_test_d['difference_pred_real'] = real_pred_test_d['y_pred'] - real_pred_test_d['age']
+
+real_pred_all.to_excel(r"real_pred_all.xlsx")
+
+### Extra: ---------------------------------------------------###
+
+train=pd.read_csv(r"train.csv")
+# Training set:
+x_train=train[train.columns.drop(list(['FID', 'IID','age','bmi','sex','SMK']))]
+y_train=train[['age']]
+## Covert to array for analysis:
+y_train_array = y_train.values
+y_train_array = y_train_array.astype(np.float64)
+
+x_train_selectedFA=x_train[selectedFA]
+x_train_selectedFA_array=x_train_selectedFA.values
+
+x_test_h_selectedFA=x_test_h[selectedFA]
+x_test_d_selectedFA=x_test_d[selectedFA]
+
+###############  model fitting of random forest
+### tune hyperparameter of RF using RandomizedSearchCV
+Model_RF.fit(x_train_selectedFA, y_train_array.ravel())
+
+### Fit in training sets:
+y_pred_train = Model_RF.predict(x_train_selectedFA)
+y_pred_train = pd.DataFrame({'y_pred_train':y_pred_train})
+
+real_pred_train = pd.concat([y_train, y_pred_train], axis=1)
+
+real_pred_train_arrary = real_pred_train.values.transpose()
+np.corrcoef(real_pred_train_arrary)  
+mean_absolute_error(y_train, y_pred_train)  
+
+### Save restuls
+real_pred_train['group']='HC'
+real_pred_train = real_pred_train.rename(columns= {"y_pred_train": "y_pred"})
+real_pred_train['difference_pred_real'] = real_pred_train['y_pred'] - real_pred_train['age']
+real_pred_train.to_excel(r"real_pred_train.xlsx")
+
+### Extra: ------------------------------------------------End###
+
+
+# a = ['Age', 'y_pred', 'group']
+# real_pred_all_a = real_pred_all[a]
+
+gg = (ggplot(real_pred_all) + aes(x='age', y='y_pred', color='group', shape='group') +
+      scale_color_manual(["#00CDCD", "#EE3B3B"]) +
+      geom_point() + 
+      geom_vline(xintercept = 30, linetype="dotted", 
+            color = "grey", size=0.8) +
+      geom_vline(xintercept = 40, linetype="dotted", 
+            color = "grey", size=0.8) +
+      geom_vline(xintercept = 50, linetype="dotted", 
+            color = "grey", size=0.8) +
+      xlim(15, 70) +
+      ylim(15, 70) +
+      geom_smooth(method='lm', se=True, fullrange=False) +
+      labs(y='brain age', 
+           x='chronological age', 
+           title='corrected brain age') + 
+      theme(panel_background=element_rect(fill='white', alpha=1),
+      plot_title = element_text(size=20, margin=dict(b=15)),
+      axis_line=element_line(size=1),
+      axis_text = element_text(size=20), 
+      axis_title = element_text(size=20),
+      legend_title = element_text(size=20, margin=dict(b=10)),
+      legend_key_size= 30,
+      legend_text = element_text(size=15),
+      panel_border = element_rect(colour = "black", size=1),
+      panel_grid_major = element_blank(),
+      panel_grid_minor = element_blank()))
+gg
+
+gg.save(filename=r'BrainAge_SMK_test_lm_RF_ppt.jpeg', height = 6, width= 6, dpi= 300)
+
+
+
+
