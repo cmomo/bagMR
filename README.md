@@ -1,6 +1,6 @@
 # bagMR
 
-This is the website for paper "<i> Evaluating the causal effect of tobacco smoking on white matter brain aging: a two-sample Mendelian randomization analysis in UK Biobank<i> ". 
+This is the website for paper <b><i>"Evaluating the causal effect of tobacco smoking on white matter brain aging: a two-sample Mendelian randomization analysis in UK Biobank"</i></b>. 
 
 BAGcalculation.txt contains the Python code for calculating brain aging gap (BAG)
 
